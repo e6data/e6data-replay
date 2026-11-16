@@ -24,11 +24,19 @@ To run on another engine, add a plug-in: [docs/adding-an-engine.md](docs/adding-
 
 2. **Install the connector and set the connection details for your engine.** Follow its page: [e6data](docs/engines/e6data.md#setup) or [Databricks](docs/engines/databricks.md#setup).
 
-3. **Run** the included example queries, or your own CSV ([Prepare the queries CSV](#prepare-the-queries-csv)):
+3. **Run** the three example queries first, to check the connection:
 
    ```
-   python -m replay examples/queries.csv --engine e6data --runs 3
+   python -m replay examples/queries.csv --engine e6data
    ```
+
+4. **Run the full TPC-DS set**, or your own CSV ([Prepare the queries CSV](#prepare-the-queries-csv)):
+
+   ```
+   python -m replay tpcds_103_queries.csv --engine e6data --runs 3
+   ```
+
+`tpcds_103_queries.csv` holds the 99 standard TPC-DS queries. Queries 14, 23, 24 and 39 each have an a and b version, which makes 103. It has one SQL column per engine (`QUERY_ENGINE_1`, `QUERY_ENGINE_2`). Today both hold the same SQL. The script uses the first. To use the second, add `--sql-column QUERY_ENGINE_2`.
 
 Run from the folder that contains the `replay` folder. The machine needs outbound HTTPS (port 443) to the engine. Behind a corporate proxy, set the `https_proxy` environment variable.
 
@@ -175,6 +183,7 @@ Access tokens work like passwords. Keep them to yourself, and set them as enviro
 ## Layout
 
 ```
+tpcds_103_queries.csv   the 103 TPC-DS queries
 replay/
   cli.py              options, scheduling, results and report
   queries.py          reads the queries CSV
