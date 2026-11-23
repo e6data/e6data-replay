@@ -38,7 +38,7 @@ To run on another engine, add a plug-in: [docs/adding-an-engine.md](docs/adding-
 
 `tpcds_103_queries.csv` holds the 99 standard TPC-DS queries. Queries 14, 23, 24 and 39 each have an a and b version, which makes 103. It has one SQL column per engine (`QUERY_ENGINE_1`, `QUERY_ENGINE_2`). Today both hold the same SQL. The script uses the first. To use the second, add `--sql-column QUERY_ENGINE_2`.
 
-Run from the folder that contains the `replay` folder. The machine needs outbound HTTPS (port 443) to the engine. Behind a corporate proxy, set the `https_proxy` environment variable.
+Run from the folder that contains the `replay` folder. The machine needs outbound HTTPS (port 443) to the engine. Behind a corporate proxy, set the `https_proxy` environment variable. If the proxy blocks gRPC (for example Zscaler), run e6data with `--e6-transport http`: see [e6data behind a proxy](docs/engines/e6data.md#behind-a-proxy-that-blocks-grpc-for-example-zscaler).
 
 ## Prepare the queries CSV
 

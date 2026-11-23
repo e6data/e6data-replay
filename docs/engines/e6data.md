@@ -52,6 +52,7 @@ The `e6data:` line printed before the run ends with `as <user>`, which tells you
 | `--e6-cluster NAME` | Cluster to run on | `E6_CLUSTER` |
 | `--e6-catalog NAME` | Catalog holding the tables | `E6_CATALOG` |
 | `--e6-schema NAME` | Schema that plain table names resolve in | `E6_SCHEMA` |
+| `--e6-transport grpc\|http` | How to talk to e6data. `http` uses the REST API over HTTP/1.1. See [Behind a proxy that blocks gRPC](#behind-a-proxy-that-blocks-grpc-for-example-zscaler) | `E6_TRANSPORT`, else `grpc` |
 | `--e6-no-usage` | Skip reading core-hours and cost after the run | usage on |
 
 `E6_USER` and `E6_TOKEN` are read only from the environment, never from options.
@@ -88,11 +89,27 @@ SELECT * FROM system.usage.core_usage WHERE cluster_name = '<cluster>' ORDER BY 
 
 When you finish for the day, suspend the cluster (and the warm pool, if you use one) in the console with the pause button. A cluster also suspends by itself after a period without queries.
 
+## Behind a proxy that blocks gRPC (for example Zscaler)
+
+The connector talks gRPC, which needs HTTP/2. Some proxies that inspect HTTPS, such as Zscaler, only pass HTTP/1.1, and the login fails with `missing selected ALPN property`. Use the HTTP transport instead. It sends the same queries to the same cluster through e6data's REST API over HTTP/1.1, and needs no connector:
+
+```
+export E6_TRANSPORT=http
+python -m replay tpcds_103_queries.csv --engine e6data --runs 3
+```
+
+(or add `--e6-transport http` to the command). The output has the same columns: server timings, query ids, usage and cost are read from the same e6data data as over gRPC.
+
+- If the proxy re-signs certificates and Python reports `CERTIFICATE_VERIFY_FAILED`, set `E6_CA_BUNDLE` to the proxy's root certificate (a `.pem` file).
+- Behind an explicit proxy, set `https_proxy` as usual.
+- `client_seconds` includes the HTTP requests for each query and the proxy's inspection time. A query that runs past 10 s is polled, which can add up to about 0.25 s. Compare `client_seconds` only between runs that used the same transport; the summary file records it as `e6data_transport`. Server timings measure the same thing on both. With `--pattern` at a low rate, a connection left idle for over 20 s is reopened before its next query, so that query's `client_seconds` includes a new TLS handshake.
+
 ## Troubleshooting
 
 | Message | What to do |
 |---|---|
 | `could not reach ... within 420s` | Outbound HTTPS (port 443) is blocked, or a proxy is needed. Set `https_proxy` or try another network |
+| `missing selected ALPN property` | A proxy is blocking gRPC. Use `--e6-transport http` (see above) |
 | `e6data login failed` / `PERMISSION_DENIED` | Check that `E6_USER` is your login email (not a display name), that the token hasn't expired, and that your user has a role on the cluster and the catalog |
 | `the cluster is suspended and could not be resumed from here` | The script normally resumes the cluster at login (a few minutes). If that fails, resume it in the console, then rerun |
 | `{INVALID QUERY} ... [line x, col y]` | SQL syntax error, or an unknown table or column. Check `E6_CATALOG` and `E6_SCHEMA` |
