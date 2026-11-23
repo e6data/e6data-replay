@@ -6,6 +6,8 @@ The rest from options or environment variables:
     --e6-cluster  E6_CLUSTER   cluster to run on
     --e6-catalog  E6_CATALOG   catalog holding the tables
     --e6-schema   E6_SCHEMA    schema (database) that plain table names resolve in
+    --e6-transport E6_TRANSPORT grpc (default, the connector) or http (REST over HTTP/1.1, for proxies
+                               such as Zscaler that block gRPC; needs no connector)
 """
 import json
 import os
@@ -29,7 +31,13 @@ def _utc_epoch(v):
     if isinstance(v, (int, float)):
         return float(v)
     if not isinstance(v, datetime):
-        v = datetime.fromisoformat(str(v).strip().replace("Z", "+00:00").replace(" ", "T", 1))
+        text = str(v).strip()
+        if re.fullmatch(r"\d{12,}", text):  # epoch milliseconds
+            return int(text) / 1000.0
+        text = text.replace("Z", "+00:00").replace(" ", "T", 1)
+        text = re.sub(r"\.(\d+)", lambda m: "." + m.group(1)[:6].ljust(6, "0"), text, count=1)  # Python < 3.11
+        text = re.sub(r"([+-]\d{2})(\d{2})$", r"\1:\2", text)   # +0000 -> +00:00
+        v = datetime.fromisoformat(text)
     if v.tzinfo is None:
         v = v.replace(tzinfo=timezone.utc)
     return v.timestamp()
@@ -47,6 +55,9 @@ class E6Data(Engine):
         g.add_argument("--e6-cluster", help="cluster to run on (default: E6_CLUSTER)")
         g.add_argument("--e6-catalog", help="catalog holding the tables (default: E6_CATALOG)")
         g.add_argument("--e6-schema", help="schema that plain table names resolve in (default: E6_SCHEMA)")
+        g.add_argument("--e6-transport", choices=("grpc", "http"),
+                       help="grpc (the connector, default) or http (REST over HTTP/1.1, for networks whose "
+                            "proxy blocks gRPC, such as Zscaler) (default: E6_TRANSPORT or grpc)")
         g.add_argument("--e6-no-usage", action="store_true",
                        help=f"skip reading core-hours and cost from {USAGE_VIEW} after the run")
 
@@ -66,19 +77,30 @@ class E6Data(Engine):
         self.cluster = setting(args.e6_cluster, "E6_CLUSTER", "cluster")
         self.catalog = setting(args.e6_catalog, "E6_CATALOG", "catalog")
         self.schema = setting(args.e6_schema, "E6_SCHEMA", "schema")
+        self.transport = (args.e6_transport or os.environ.get("E6_TRANSPORT", "") or "grpc").strip().lower()
+        if self.transport not in ("grpc", "http"):
+            sys.exit(f"e6data transport must be grpc or http, not {self.transport!r} (E6_TRANSPORT)")
 
     def describe(self):
-        return f"cluster {self.cluster}, dataset {self.catalog}.{self.schema}, as {self.user}"
+        over = " over HTTP" if self.transport == "http" else ""
+        return f"cluster {self.cluster}, dataset {self.catalog}.{self.schema}, as {self.user}{over}"
 
     def connect(self):
-        try:
-            from e6data_python_connector import Connection
-        except ImportError:
-            return None, "the e6data connector is not installed: pip install e6data-python-connector==3.0.0"
-        c = Connection(host=self.host, port=self.port, username=self.user, password=self.token,
-                       catalog=self.catalog, database=self.schema, cluster_name=self.cluster,
-                       secure=True, auto_resume=True)
-        _, exc, timed_out = with_deadline(lambda: c.get_session_id, LOGIN_TIMEOUT_S)
+        if self.transport == "http":
+            from .e6data_http import HttpConnection
+            c = HttpConnection(self.host, self.port, self.user, self.token, self.cluster, self.catalog, self.schema)
+            login = lambda: c.login(LOGIN_TIMEOUT_S - 20)  # noqa: E731
+        else:
+            try:
+                from e6data_python_connector import Connection
+            except ImportError:
+                return None, ("the e6data connector is not installed: pip install e6data-python-connector==3.0.0 "
+                              "(or use --e6-transport http, which needs no connector)")
+            c = Connection(host=self.host, port=self.port, username=self.user, password=self.token,
+                           catalog=self.catalog, database=self.schema, cluster_name=self.cluster,
+                           secure=True, auto_resume=True)
+            login = lambda: c.get_session_id  # noqa: E731
+        _, exc, timed_out = with_deadline(login, LOGIN_TIMEOUT_S)
         if timed_out:
             close_quietly(c)
             return None, (f"could not reach {self.host}:{self.port} within {LOGIN_TIMEOUT_S}s. Check that outbound "
@@ -94,6 +116,8 @@ class E6Data(Engine):
         qid = getattr(cursor, "query_id", None)
         if qid:
             cursor.cancel(qid)
+        elif hasattr(cursor, "_cancel_requested"):  # HTTP cursor, id not known yet: it cancels as soon as it is
+            cursor.cancel()
 
     def query_stats(self, cursor):
         """One extra call to the engine (not in client_seconds)."""
@@ -206,7 +230,8 @@ class E6Data(Engine):
                 "complete": latest >= t1 - 30, "recorded_to": latest}, None
 
     def finish(self, results, t0, t1):
-        facts = [("e6data_dataset", f"{self.catalog}.{self.schema}"), ("e6data_cluster", self.cluster)]
+        facts = [("e6data_dataset", f"{self.catalog}.{self.schema}"), ("e6data_cluster", self.cluster),
+                 ("e6data_transport", self.transport)]
         notes, lines = [], []
         ok = [r for r in results if r["status"] == "OK"]
         if ok and not self.args.no_server_stats:
